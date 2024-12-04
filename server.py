@@ -19,6 +19,41 @@ PORT = 12345
 #dictionary to keep track of online users when they login and then remover from dictionary when logout
 online_users = {}
 
+def insert_rating(user_id, product_id, rating):
+    try:
+        rating_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"Inserting rating: user_id={user_id}, product_id={product_id}, rating={rating}, date={rating_date}")
+        cursor.execute("""
+            INSERT INTO Ratings (user_id, product_id, rating, rating_date)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, product_id, rating, rating_date))
+        
+        conn.commit()
+        response = {
+                        "status": "success",
+                        "message":"Rating added successfully"
+                    }
+        return response
+        
+    except Exception as e:
+        print("in except: ", e)
+        response = {
+                        "status": "failure",
+                        "message": str(e),
+                    }
+        return response
+
+
+def get_average_rating(product_id):
+    cursor.execute('''
+        SELECT AVG(rating) FROM Ratings
+        WHERE product_id = ?
+    ''', (product_id,))
+    result = cursor.fetchone()
+    if result[0] is not None:
+        return result[0]
+    else : return 0
+
 #function to send email for buyer to confirm his/her purchase using smtp protocol
 def send_email(recipient, productList, pickup_info):
     smtp_server = 'smtp.gmail.com'
@@ -62,6 +97,20 @@ AUBoutique
     except Exception as e:
         print(f"Failed to send email: {e}")
 
+def receive_req(client_socket):
+    try:
+        request = client_socket.recv(1024).decode('utf-8') # Receive request from the client
+        if not request:
+            return
+
+        try:
+            data = json.loads(request) #parse JSON data from the client request
+        except json.JSONDecodeError:
+            response = json.dumps({"error": "Invalid JSON format."})
+            client_socket.send(response.encode('utf-8'))
+            
+    except:
+        return
 
 
 def handle_client(client_socket, addr):
@@ -124,8 +173,8 @@ def handle_client(client_socket, addr):
                 response = view_products(authenticated_user[0])
                 client_socket.send(json.dumps(response).encode('utf-8'))
             # Command to search for products listed by a specific seller
-            elif command == "SEARCH_PRODUCTS_BY_SELLER" and authenticated_user:
-                response = search_products_by_seller(data.get("seller_username"))
+            elif command == "VIEW_PRODUCTS_BY_SELLER" and authenticated_user:
+                response = search_products_by_seller(data.get("seller_id"))
                 client_socket.send(json.dumps(response).encode('utf-8'))
             # Command to view the listing of the seller (products that he added that were sold or not)
             elif command == "VIEW_MY_LISTINGS" and authenticated_user:
@@ -139,20 +188,12 @@ def handle_client(client_socket, addr):
             elif command == "VIEW_TRANSACTIONS" and authenticated_user:
                 response = view_transactions(authenticated_user[0])
                 client_socket.send(json.dumps(response).encode('utf-8'))
-            #View the image of the product the user wants to see
-            elif command == "VIEW_IMAGE" and authenticated_user: 
-                product_id = data.get("product_id")
-                (response,image_data) = view_product_image(product_id)
+            elif command == "SEARCH_PRODUCT_BY_NAME" and authenticated_user:
+                product_name = data.get("product_name", "")
+                response = search_product_by_name(product_name)
                 client_socket.send(json.dumps(response).encode('utf-8'))
-                if "Data sent" in response["message"]:
-
-                    client_socket.sendall(len(image_data).to_bytes(4, 'big')) #sending the size of the image to the client to know what to expect
-                    client_socket.sendall(image_data) #sending the bytes of the data of the image
-            # Command to cancel a listing of the current user if he wants to
-            elif command == "CANCEL_LISTING" and authenticated_user:
-                product_id = data.get("product_id")
-                response = cancel_listing(authenticated_user[0], product_id)
-                client_socket.send(json.dumps(response).encode('utf-8'))
+           
+            
             # Command to logout, we remove the user from being online 
             elif command == "LOGOUT" and authenticated_user:
                 user_id = authenticated_user[0]
@@ -160,7 +201,43 @@ def handle_client(client_socket, addr):
                 conn.commit()
                 online_users.pop(user_id, None)
                 client_socket.send(json.dumps({"message": "You have been logged out."}).encode('utf-8'))
+            elif command == "RATE_PRODUCT" and authenticated_user:
+                user_id = authenticated_user[0]
+                
+                product_id = data.get('product_id')
+                rating = data.get('rating')
+                
+                if rating < 1 or rating > 5:
+                    print("in if")
+                    response = {"status": "failure", "message": "Rating must be between 1 and 5"}
+                    client_socket.send(json.dumps(response).encode('utf-8'))
+                    return
+                print("Before response")
+                response = insert_rating(user_id, product_id, rating)
+                print("After response")
+                client_socket.send(json.dumps(response).encode('utf-8'))
+            elif command =="GET_AVERAGE_RATING" and authenticated_user:
+                avg_rating = get_average_rating(data.get('product_id'))
+                avg_rating = round(avg_rating, 1)
+
+                response = {
+                    "status": "success",
+                    "message": f"Average rating for product {data.get('product_id')} fetched successfully.",
+                    "average_rating": avg_rating
+                }
+                client_socket.send(json.dumps(response).encode('utf-8'))
+            elif command=="GET_SELLER_LIST" and authenticated_user:
+                print(f"Processing GET_SELLER_LIST for user: {authenticated_user[0]}")  # Debug log
+                response = sellerlist()
+                client_socket.send(json.dumps(response).encode('utf-8'))
+
+
+                        
         
+
+    except Exception as e:
+        response = {"status": "failure", "message": str(e)}
+        client_socket.send(json.dumps(response).encode('utf-8'))
 
     except Exception as e:
         print(f"[ERROR] {e}")
@@ -224,25 +301,28 @@ def login_user(username, password):
 
 # The add_product() function takes the inputs (product name, description, price and image path) of the user from the client side and then add them into the database to create a new product. The username of the one who added the product will be added as well.
 def add_product(user_id, product_name, description, price,quantity, image_path):
-
-   
-    cursor.execute("""
-        INSERT INTO Products (user_id, product_name, description, price, quantity, image_path)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (user_id, product_name, description, float(price),int(quantity), image_path))
-    # as mentioned above, we are adding the characteristics mentioned above and we also have accounted an availibilty variable in the database to put if the product is available
-    conn.commit()
-    return {"message": "Product added successfully."}
+    try:
+    
+        cursor.execute("""
+            INSERT INTO Products (user_id, product_name, description, price, quantity, image_path)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, product_name, description, float(price),int(quantity), image_path))
+        # as mentioned above, we are adding the characteristics mentioned above and we also have accounted an availibilty variable in the database to put if the product is available
+        conn.commit()
+        return {"message": "Product added successfully."}
+    except:
+        return {"message": "Product not added."}
 
 # The view_products function shows all the products available 
 def view_products(user_id):
     # Notice how here it is "Products.something" because we want to select all the products not only a specific one
+    print("view in")
     cursor.execute("""
         SELECT 
             Products.product_id, 
             Products.product_name,
             Products.price,
-            Products.description short_description,
+            Products.description,
             Products.quantity,
             Products.image_path,
             Seller.username || ' - ' || Seller.name AS seller_info
@@ -267,23 +347,24 @@ def view_products(user_id):
             "product_id": product[0],
             "product_name": product[1],
             "price": product[2],
-            "short_description": product[3],
+            "description": product[3],
             "quantity": product[4],
             "image_path": product[5],
             "seller_info": product[6]
+
         })
         # here we are appending all the information of products and note that it will be translated into a tabular form in the client side
     
     return {"message": "Product list below", "products": results}
 
 #search_products_byseller has the same logic as view product except that we get from the user a specific seller (username) and view his product
-def search_products_by_seller(seller_username): 
+def search_products_by_seller(user_id): 
     cursor.execute("""
         SELECT 
             Products.product_id,
             Products.product_name,
             Products.price,
-            Products.descriptionshort_description,
+            Products.description,
             Products.quantity,
             Products.image_path,
             Seller.username || ' - ' || Seller.name AS seller_info
@@ -292,13 +373,13 @@ def search_products_by_seller(seller_username):
         JOIN 
             Users AS Seller ON Products.user_id = Seller.user_id 
         WHERE 
-            Seller.username = ? 
-    """, (seller_username,)) # note that here  we check the products of our wanted seller
+            Seller.user_id = ? 
+    """, (user_id,)) # note that here  we check the products of our wanted seller
     
     products = cursor.fetchall()
 
     if not products:
-        return {"message": f"No products found for seller '{seller_username}'."}
+        return {"message": f"No products found for seller '{user_id}'."}
 
     results = []
     for product in products: #same as before
@@ -306,14 +387,41 @@ def search_products_by_seller(seller_username):
             "product_id": product[0],
             "product_name": product[1],
             "price": product[2],
-            "short_description": product[3],
+            "description": product[3],
             "quantity": product[4],
             "image_path": product[5],
             "seller_info": product[6]
         })
 
-    return {"message":f"Products for seller '{seller_username}'." ,"products": results}
+    return {"message":f"Products for seller '{user_id}'." ,"products": results}
+def search_product_by_name(product_name):
+    try:
+        cursor.execute('''
+            SELECT 
+                product_id, product_name, description, price, quantity, image_path 
+            FROM Products
+            WHERE product_name LIKE ?
+        ''', (f"%{product_name}%",))  # Use LIKE for partial matches
+        products = cursor.fetchall()
 
+        if not products:
+            return {"message": "No products found for the given name."}
+
+        results = []
+        for product in products:
+            results.append({
+                "product_id": product[0],
+                "product_name": product[1],
+                "description": product[2],
+                "price": product[3],
+                "quantity": product[4],
+                "image_path": product[5],
+            })
+
+        return {"message": "Products found.", "products": results}
+    except Exception as e:
+        print(f"Error in search_product_by_name: {e}")
+        return {"message": "An error occurred while searching for products."}
 #The purchase function helps the user to select many products at the same time and purchase them
 def purchase_product(buyer_id, product_ids):
     cursor.execute("SELECT email FROM Users WHERE user_id = ?", (buyer_id,))
@@ -324,20 +432,19 @@ def purchase_product(buyer_id, product_ids):
     productNames = [] 
     for product_id in product_ids: # remember, product_ids is the list of ID of the products that we sent from the client side, so this list has the IDs of the products that the user wants
         cursor.execute(
-            "SELECT product_name, status, user_id FROM Products WHERE product_id = ?", (product_id,)
+            "SELECT product_name, quantity, user_id FROM Products WHERE product_id = ?", (product_id,)
         )
         product = cursor.fetchone() #we fetch to obtain the product
-
         if product: #if product is here
-            product_name, status, seller_id = product  
+            product_name, quantity, seller_id = product  
             if seller_id == buyer_id: # a user is not allowed to buy his own product
                 return {"message": "You cannot purchase your own product."}
-            elif status == "Available":
+            elif quantity >= 1:
                 cursor.execute(
-                    "UPDATE Products SET status = 'Sold' WHERE product_id = ?", (product_id,)
+                    "UPDATE Products SET quantity = ? WHERE product_id = ?", (quantity-1,product_id,)
                 ) 
                 # Here we update from available to Sold since the product is bought
-
+                conn.commit()
                 transaction_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S') # the transaction time is set at this instant
                 cursor.execute(
                     "INSERT INTO Transactions (buyer_id, product_id, transaction_date) VALUES (?, ?, ?)",
@@ -346,7 +453,7 @@ def purchase_product(buyer_id, product_ids):
 
                 conn.commit()
                 productNames.append(product_name) # for each product we keep track of the name of the product and add it to our list which is an argument for the send email function since when sending a mail to the buyer we are also naming the products he bought  
-
+                print(productNames)
         else:
             return {"message": f"Product ID {product_id} does not exist."} 
     
@@ -495,17 +602,35 @@ def view_transactions(user_id):
         "sold_transactions": sold_results,
         "bought_transactions": bought_results
     }
+def sellerlist():
+    try:
+        cursor.execute("SELECT DISTINCT user_id FROM Products")
+        seller_ids = cursor.fetchall()  # Fetch all seller IDs
 
-# view product image sents the data of the photo to the client so that it can open the picture and show it to the user
-def view_product_image(product_id):
-    cursor.execute("SELECT image FROM Products WHERE product_id = ?", (product_id,))
-    result = cursor.fetchone() # we get the data necessary to open the image
+        if seller_ids:
+            sellers = []
+            for seller_id_tuple in seller_ids:
+                seller_id = seller_id_tuple[0]
 
-    if not result or not result[0]: # if no data
-        return {"message":"No image data"}  
+                # Fetch seller details
+                cursor.execute("SELECT username, name FROM Users WHERE user_id=?", (seller_id,))
+                seller_data = cursor.fetchone()
 
-    image_data = result[0]
-    return ({"message":"Data sent"},image_data)# we send the data 
+                if seller_data:
+                    sellers.append({
+                        'user_id': seller_id,
+                        'username': seller_data[0],
+                        'name': seller_data[1]
+                    })
+
+            return {"message": "Success", "sellers": sellers}
+        else:
+            return {"message": "No sellers found.", "sellers": []}
+    except Exception as e:
+        print(f"Error fetching seller list: {e}")
+        return {"message": "Server error occurred.", "sellers": []}
+
+
 
 # send message uses the receiver username enter by the user on the client side along with the content and send it to the receiver
 def send_message(sender_id, receiver_username, content):
@@ -621,16 +746,7 @@ def view_all_messages_received(user_id):
 
     return {"message": "Messages found", "results": results}
 
-# Cancel a product listing by setting its status to 'Cancelled'
-def cancel_listing(user_id, product_id):
-    cursor.execute("SELECT user_id FROM Products WHERE product_id = ?", (product_id,))
-    result = cursor.fetchone()
 
-    if result and result[0] == user_id:
-        cursor.execute("DELETE FROM Products WHERE product_id = ?", (product_id,))
-        conn.commit()
-        return {"message": "Product listing canceled."}
-    return {"message": "You cannot cancel a listing that you do not own."}
 
 if __name__ == "__main__":
     start_server()

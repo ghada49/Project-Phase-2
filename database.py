@@ -61,5 +61,18 @@ cursor.execute('''
 
 '''
 
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Ratings (
+        rating_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        product_id INTEGER,
+        rating REAL CHECK(rating >= 1 AND rating <= 5),
+        rating_date TEXT,
+        FOREIGN KEY(user_id) REFERENCES Users(user_id),
+        FOREIGN KEY(product_id) REFERENCES Products(product_id)
+    )
+''')
+
+
 
 db.commit()
