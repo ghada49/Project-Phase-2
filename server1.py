@@ -8,8 +8,6 @@ from datetime import datetime, timedelta
 import smtplib
 import io
 
-
-
 # Connect to SQLite3 database 'Boutique.db' but make sure to run the database.py file before inorder to create the database if it the first time you run
 conn = sqlite3.connect('Boutique.db', check_same_thread=False)
 cursor = conn.cursor()
@@ -20,8 +18,6 @@ HOST = '127.0.0.1'
 PORT = 12345
 #dictionary to keep track of online users when they login and then remover from dictionary when logout
 online_users = {}
-message_queue = {}
-
 
 def insert_rating(user_id, product_id, rating):
     try:
@@ -120,7 +116,7 @@ def receive_req(client_socket):
 def handle_client(client_socket, addr):
     print(f"[NEW CONNECTION] {addr} connected.")
     authenticated_user = None
-    global online_users
+    online_users[addr] = client_socket
 
     try:
         while True:
@@ -141,17 +137,24 @@ def handle_client(client_socket, addr):
                 response = register_user(data.get("name"), data.get("email"), data.get("username"), data.get("password"))
                 client_socket.send(json.dumps(response).encode('utf-8'))
              # Command to log in an existing user, updating online status if successful
+
             elif command == "LOGIN":
                 response, authenticated_user = login_user(data.get("username"), data.get("password"))
                 if authenticated_user:
-                    online_users[authenticated_user[0]] = client_socket
+                    user_id = authenticated_user[0]
+                    online_users[user_id] = {
+                        "socket": client_socket,
+                        "p2p_port": data.get("p2p_port")
+                    }
                 client_socket.send(json.dumps(response).encode('utf-8'))
+
 
             # Command to purchase a product by getting the product ID inputed by the client
             elif command == "PURCHASE" and authenticated_user:
                 product_id = data.get("product_id")
                 response = purchase_product(authenticated_user[0], product_id)
                 client_socket.send(json.dumps(response).encode('utf-8'))
+           
 
             # Command to add a new product listing to the marketplace
             elif command == "ADD_PRODUCT" and authenticated_user:
@@ -169,6 +172,7 @@ def handle_client(client_socket, addr):
             elif command == "VIEW_MY_LISTINGS" and authenticated_user:
                 response = view_my_listings(authenticated_user[0])
                 client_socket.send(json.dumps(response).encode('utf-8'))
+            
 
             #Command to view the transactions (what we bought or sold)
             elif command == "VIEW_TRANSACTIONS" and authenticated_user:
@@ -216,51 +220,26 @@ def handle_client(client_socket, addr):
                 print(f"Processing GET_SELLER_LIST for user: {authenticated_user[0]}")  # Debug log
                 response = sellerlist()
                 client_socket.send(json.dumps(response).encode('utf-8'))
+            elif command == "GET_CLIENT_INFO":
+                target_username = data.get("target_username")
+                cursor.execute("SELECT user_id FROM Users WHERE username = ?", (target_username,))
+                target_user = cursor.fetchone()
 
-            elif command == "FETCH_ONLINE_USERS" and authenticated_user:
-                # Fetch all online users except the requester
-                cursor.execute("SELECT username FROM Users WHERE status = 'Online' AND user_id != ?", (authenticated_user[0],))
-                users = cursor.fetchall()
-                online_users = [{"username": user[0]} for user in users] if users else []
-                response = {"status": "success", "online_users": online_users}
-                client_socket.send(json.dumps(response).encode('utf-8'))
-            
-            elif command == "SEND_MESSAGE" and authenticated_user:
-                sender = authenticated_user
-                recipient = data.get("recipient")
-                message = data.get("message")
-                
-                if not recipient or not message:
-                    response = {"status": "error", "message": "Recipient or message is missing."}
-                    client_socket.send(json.dumps(response).encode('utf-8'))
-                    return
-
-                if recipient not in message_queue:
-                    message_queue[recipient] = []
-                
-                message_queue[recipient].append({"sender": sender, "content": message})
-                response = {"status": "success", "message": "Message sent."}
-                client_socket.send(json.dumps(response).encode('utf-8'))
-
-            elif command == "FETCH_MESSAGES" and authenticated_user:
-                recipient = data.get("recipient")
-                
-                if not recipient:
-                    response = {"status": "error", "message": "Recipient username is missing."}
-                    client_socket.send(json.dumps(response).encode('utf-8'))
-                    return
-
-                if recipient in message_queue and message_queue[recipient]:
-                    messages = message_queue[recipient]
-                    message_queue[recipient] = [] 
-                    response = {"status": "success", "messages": messages}
+                if target_user and target_user[0] in online_users:
+                    target_info = online_users[target_user[0]]
+                    ip, _ = target_info["socket"].getpeername()
+                    port = target_info["p2p_port"]
+                    response = {"status": "success", "ip": ip, "port": port}
                 else:
-                    response = {"status": "success", "messages": []}  
+                    response = {"status": "failure", "message": "Target user is not online."}
 
+                client_socket.send(json.dumps(response).encode('utf-8'))
+            elif command == "GET_ONLINE_USERS":
+                response = get_online_users()
                 client_socket.send(json.dumps(response).encode('utf-8'))
 
 
-
+            
     except Exception as e:
         response = {"status": "failure", "message": str(e)}
         client_socket.send(json.dumps(response).encode('utf-8'))
@@ -356,7 +335,7 @@ def view_products(user_id):
             Products
         JOIN 
             Users AS Seller ON Products.user_id = Seller.user_id
-        WHERE  
+        WHERE 
             Products.quantity != 0  
     """) 
 # we only select available product
@@ -491,6 +470,37 @@ def purchase_product(buyer_id, product_ids):
         return {"message": f"No products selected"}
 
 
+    cursor.execute("""
+        SELECT 
+            Users.username || ' - ' || Users.name AS user_info,
+            Users.status,
+            COUNT(Products.product_id) AS products_added,
+            SUM(CASE WHEN Products.status = 'Sold' THEN 1 ELSE 0 END) AS products_sold,
+            (SELECT COUNT(*) FROM Transactions WHERE Transactions.buyer_id = Users.user_id) AS products_purchased
+        FROM 
+            Users
+        LEFT JOIN 
+            Products ON Users.user_id = Products.user_id
+        GROUP BY 
+            Users.user_id
+    """)
+    users = cursor.fetchall() # here it gets all the data from the USERS database and give it to the client
+
+    if not users:
+        return {"message": "No users found."}
+
+    results = []
+    for user in users:
+        results.append({
+            "user_info": user[0],
+            "status": user[1],
+            "products_added": user[2],
+            "products_sold": user[3],
+            "products_purchased": user[4]
+        }) # we can see all these fields of the user
+
+    return {"message": "Users: ","users": results}
+# view listing permits the user (seller) to see what products he sold or not
 def view_my_listings(user_id):
     cursor.execute("""
         SELECT 
@@ -622,6 +632,14 @@ def sellerlist():
     except Exception as e:
         print(f"Error fetching seller list: {e}")
         return {"message": "Server error occurred.", "sellers": []}
+
+def get_online_users():
+    """Fetch the list of online users."""
+    cursor.execute("SELECT user_id, username, name FROM Users WHERE status = 'Online'")
+    users = cursor.fetchall()
+
+    return {"status": "success", "users": [{"user_id": user[0], "username": user[1], "name": user[2]} for user in users]}
+
 
 
 

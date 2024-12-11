@@ -6,7 +6,6 @@ import traceback
 import sys
 import io
 import os
-from PyQt5.QtCore import Qt, pyqtSignal
 
 from PyQt5.QtWidgets import (
     QApplication, QComboBox, QTextEdit, QMainWindow, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
@@ -37,8 +36,6 @@ model = genai.GenerativeModel(
 
 
 
-
-
 HOST = '127.0.0.1'
 PORT = 12345
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -46,6 +43,7 @@ client_socket.connect((HOST, PORT))
 
 authenticated = False
 current_user = None
+chat_socket = None
 
 
 #send_request take the data and transform it into json data. Then we receive a response from the server and transform it again
@@ -67,7 +65,109 @@ def send_request(data):
         print(f"Error during send_request: {e}")
         return {"message": "An error occurred while communicating with the server."}
 
+
+def get_target_client_info(target_username):
+    request_data = {"action": "GET_CLIENT_INFO", "target_username": target_username}
+    response = send_request(request_data)
+
+    if response.get("status") == "success":
+        return response["ip"], response["port"]
+    else:
+        print(response.get("message"))
+        return None, None
+
+
+
+def initiate_chat(target_ip, target_port):
+    global chat_socket
+    chat_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        chat_socket.connect((target_ip, target_port))
+        print(f"Connected to {target_ip}:{target_port}")
+        threading.Thread(target=receive_messages, args=(chat_socket,), daemon=True).start()
+        threading.Thread(target=send_messages, args=(chat_socket,), daemon=True).start()
+    except Exception as e:
+        print(f"Could not connect to {target_ip}:{target_port} - {e}")
+
+
+
+
+def receive_messages(chat_socket):
+    while True:
+        try:
+            message = chat_socket.recv(1024).decode()
+            if message:
+                print(f"Received: {message}")
+        except Exception as e:
+            print(f"Error receiving message: {e}")
+            break
+
+
+
+def send_messages(chat_socket):
+    while True:
+        message = input("Enter message: ")
+        try:
+            chat_socket.send(message.encode())
+        except Exception as e:
+            print(f"Error sending message: {e}")
+            break
+
+def listen_for_p2p_connections():
+    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener_socket.bind((HOST, 0))  
+    listener_socket.listen(1)
+    ip, port = listener_socket.getsockname()
+
+    print(f"P2P Listener started on {ip}:{port}")
     
+    threading.Thread(target=accept_p2p_connections, args=(listener_socket,), daemon=True).start()
+    return ip, port
+
+def accept_p2p_connections(listener_socket):
+    while True:
+        conn, addr = listener_socket.accept()
+        print(f"Incoming P2P connection from {addr}")
+        threading.Thread(target=receive_messages, args=(conn,), daemon=True).start()
+
+
+
+class ChatScreen(QWidget):
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+
+        layout = QVBoxLayout()
+
+        title = QLabel("Start P2P Chat")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Enter username to chat with")
+        layout.addWidget(self.username_input)
+
+        chat_button = QPushButton("Start Chat")
+        chat_button.clicked.connect(self.start_chat)
+        layout.addWidget(chat_button)
+
+        self.setLayout(layout)
+
+    def start_chat(self):
+        target_username = self.username_input.text()
+
+        if not target_username:
+            QMessageBox.warning(self, "Input Error", "Please enter a username.")
+            return
+
+        target_ip, target_port = get_target_client_info(target_username)
+
+        if target_ip and target_port:
+            initiate_chat(target_ip, target_port)
+            self.main_window.switch_to_chat_screen()
+        else:
+            QMessageBox.warning(self, "Connection Error", "Could not find the target client.")
+
 
 #The first screen with buttons to either log in or sign up
 class FirstScreen(QWidget):
@@ -203,17 +303,20 @@ class Login(QWidget):
         username = self.username_input.text()
         password = self.password_input.text()
 
-        command = {"action": "LOGIN", "username": username, "password": password}
+        ip, port = listen_for_p2p_connections()  # Start the listener
+
+        command = {"action": "LOGIN", "username": username, "password": password, "p2p_port": port}
         response = send_request(command)
 
         if "Login successful" in response.get("message"):
             global authenticated, current_user
-            authenticated = True # we keep track of it for later use 
-            current_user = username  # we store the username here for later use 
+            authenticated = True
+            current_user = username
             QMessageBox.information(self, "Success", response["message"])
             self.main_window.switch_to_main_app(username)
         else:
             QMessageBox.warning(self, "Failed", response.get("message"))
+
             reply = QMessageBox.question(
             self,"Account Exists", response.get("message") + "\nWould you like to sign up instead?",
             QMessageBox.Yes | QMessageBox.No,
@@ -992,6 +1095,88 @@ class SearchProductByName(QWidget):
         dialog.exec_()
 
 
+class MainAppScreen(QWidget):
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.selected_currency = "USD"  # Default currency
+
+        layout = QVBoxLayout()
+
+        self.username_label = QLabel("Welcome, {username}")
+        self.username_label.setAlignment(Qt.AlignCenter)
+        self.username_label.setStyleSheet("font-size: 30px; font-weight: bold;")
+        layout.addWidget(self.username_label)
+
+        currency_layout = QHBoxLayout()
+
+        currency_label = QLabel("Select Currency:")
+        currency_label.setStyleSheet("font-size: 25px; font-weight: bold;")
+        currency_layout.addWidget(currency_label)
+
+        self.currency_dropdown = QComboBox()
+        self.currency_dropdown.addItems(["USD", "EUR", "LBP", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY", "SEK", "NZD"])
+        self.currency_dropdown.setStyleSheet("""
+            font-size: 22px; 
+            font-weight: bold; 
+            color: white; 
+            background-color: #90caf9; 
+            border-radius: 8px; 
+            height: 35px; 
+            width: 200px;
+        """)
+        currency_layout.addWidget(self.currency_dropdown)
+        layout.addLayout(currency_layout)
+
+        submit_currency_button = QPushButton("Submit Currency")
+        submit_currency_button.clicked.connect(self.submit_currency)
+        layout.addWidget(submit_currency_button)
+
+        view_product_button = QPushButton("Products and Purchase")
+        view_product_button.clicked.connect(self.view_product)
+        layout.addWidget(view_product_button)
+
+        add_product_button = QPushButton("Add Product to the Market")
+        add_product_button.clicked.connect(self.add_product)
+        layout.addWidget(add_product_button)
+
+        ask_questions_chatbot=QPushButton("Ask questions to Chatbot")
+        ask_questions_chatbot.clicked.connect(self.ask_questions)
+        layout.addWidget(ask_questions_chatbot)
+
+        start_chat_button = QPushButton("Start P2P Chat")
+        start_chat_button.clicked.connect(self.start_chat)
+        layout.addWidget(start_chat_button)
+
+        logout_button = QPushButton("Logout")
+        logout_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        logout_button.clicked.connect(self.logout)
+        layout.addWidget(logout_button)
+
+        self.setLayout(layout)
+    
+    def ask_questions(self):
+        self.main_window.switch_to_ask_questions()
+
+    def set_username(self, username):
+        self.username_label.setText(f"Welcome, {username}")
+
+    def submit_currency(self):
+        self.selected_currency = self.currency_dropdown.currentText()
+        QMessageBox.information(self, "Currency Updated", f"Currency set to {self.selected_currency}")
+
+    def view_product(self):
+        self.main_window.switch_to_view_products(self.selected_currency)
+
+    def add_product(self):
+        self.main_window.switch_to_add_products()
+
+    def start_chat(self):
+        self.main_window.switch_to_chat_screen()
+
+    def logout(self):
+        self.main_window.switch_to_initial()
+
 class Chatbot(QWidget):
     def __init__(self,main_window):
         super().__init__()
@@ -1069,282 +1254,74 @@ class Chatbot(QWidget):
         self.chat_session.history.append({"role": "model", "parts": [model_response]})
 
 
-class MainAppScreen(QWidget):
+class ChatScreen(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.selected_currency = "USD"  # Default currency
+        self.online_users = [] 
 
         layout = QVBoxLayout()
 
-        self.username_label = QLabel("Welcome, {username}")
-        self.username_label.setAlignment(Qt.AlignCenter)
-        self.username_label.setStyleSheet("font-size: 30px; font-weight: bold;")
-        layout.addWidget(self.username_label)
-
-        currency_layout = QHBoxLayout()
-
-        currency_label = QLabel("Select Currency:")
-        currency_label.setStyleSheet("font-size: 25px; font-weight: bold;")
-        currency_layout.addWidget(currency_label)
-
-        self.currency_dropdown = QComboBox()
-        self.currency_dropdown.addItems(["USD", "EUR", "LBP", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY", "SEK", "NZD"])
-        self.currency_dropdown.setStyleSheet("""
-            font-size: 22px; 
-            font-weight: bold; 
-            color: white; 
-            background-color: #90caf9; 
-            border-radius: 8px; 
-            height: 35px; 
-            width: 200px;
-        """)
-        currency_layout.addWidget(self.currency_dropdown)
-        layout.addLayout(currency_layout)
-
-        submit_currency_button = QPushButton("Submit Currency")
-        submit_currency_button.clicked.connect(self.submit_currency)
-        layout.addWidget(submit_currency_button)
-
-        view_product_button = QPushButton("Products and Purchase")
-        view_product_button.clicked.connect(self.view_product)
-        layout.addWidget(view_product_button)
-
-        add_product_button = QPushButton("Add Product to the Market")
-        add_product_button.clicked.connect(self.add_product)
-        layout.addWidget(add_product_button)
-
-        ask_questions_chatbot = QPushButton("Ask questions to Chatbot")
-        ask_questions_chatbot.clicked.connect(self.ask_questions)
-        layout.addWidget(ask_questions_chatbot)
-
-        start_chat_button = QPushButton("Start a Chat")  
-        start_chat_button.clicked.connect(self.start_chat) 
-        layout.addWidget(start_chat_button)
-
-        logout_button = QPushButton("Logout")
-        logout_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
-        logout_button.clicked.connect(self.logout)
-        layout.addWidget(logout_button)
-
-        self.setLayout(layout)
-    
-    def ask_questions(self):
-        self.main_window.switch_to_ask_questions()
-
-    def set_username(self, username):
-        self.username_label.setText(f"Welcome, {username}")
-
-    def submit_currency(self):
-        self.selected_currency = self.currency_dropdown.currentText()
-        QMessageBox.information(self, "Currency Updated", f"Currency set to {self.selected_currency}")
-
-    def view_product(self):
-        self.main_window.switch_to_view_products(self.selected_currency)
-
-    def add_product(self):
-        self.main_window.switch_to_add_products()
-
-    def start_chat(self):
-        self.main_window.switch_to_online_users_menu(current_user=current_user)
-
-    def logout(self):
-        self.main_window.switch_to_initial()
-
-
-class OnlineUsersMenu(QWidget):
-    def __init__(self, main_window):
-        super().__init__()
-        self.main_window = main_window
-        self.online_users = []  
-        self.current_user = None  
-        self.active_chats = {}  # Dictionary to track active chat windows
-        self.init_ui()
-
-    def init_ui(self):
-        self.layout = QVBoxLayout()
-
-        self.title = QLabel("Online Users")
-        self.title.setAlignment(Qt.AlignCenter)
-        self.title.setStyleSheet("font-size: 30px; font-weight: bold;")
-        self.layout.addWidget(self.title)
+        # Title
+        title = QLabel("Online Users")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 30px; font-weight: bold;")
+        layout.addWidget(title)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.list_container = QWidget()
-        self.list_layout = QVBoxLayout()
-        self.list_container.setLayout(self.list_layout)
-        self.scroll_area.setWidget(self.list_container)
 
-        self.layout.addWidget(self.scroll_area)
+        self.users_container = QWidget()
+        self.users_layout = QVBoxLayout()
+        self.users_container.setLayout(self.users_layout)
 
-        self.back_button = QPushButton("Back")
-        self.back_button.clicked.connect(self.main_window.switch_to_main_app)
-        self.layout.addWidget(self.back_button)
+        self.scroll_area.setWidget(self.users_container)
+        layout.addWidget(self.scroll_area)
 
-        self.setLayout(self.layout)
+        button_layout = QHBoxLayout()
 
-    def load_online_users(self, current_user):
-        self.current_user = current_user
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self.refresh_online_users)
+        button_layout.addWidget(refresh_button)
 
-        command = {"action": "FETCH_ONLINE_USERS"}
+        back_button = QPushButton("Go Back")
+        back_button.clicked.connect(self.go_back)
+        button_layout.addWidget(back_button)
+
+        layout.addLayout(button_layout)
+
+        self.setLayout(layout)
+
+    def refresh_online_users(self):
+        command = {"action": "GET_ONLINE_USERS"}
         response = send_request(command)
 
-        for i in reversed(range(self.list_layout.count())):
-            widget = self.list_layout.itemAt(i).widget()
+        for i in reversed(range(self.users_layout.count())):
+            widget = self.users_layout.itemAt(i).widget()
             if widget:
                 widget.deleteLater()
 
         if response.get("status") == "success":
-            self.online_users = response.get("online_users", []) 
+            self.online_users = [ user for user in response.get("users", []) if user.get("username") != current_user]
             for user in self.online_users:
-                if user["username"] != self.current_user:  # Exclude the current user
-                    user_button = QPushButton(user["username"])
-                    user_button.setStyleSheet("font-size: 20px; padding: 10px;")
-                    user_button.clicked.connect(partial(self.open_chat_window, user["username"]))  # Open chat on click
-                    self.list_layout.addWidget(user_button)
+                user_button = QPushButton(user.get("username"))
+                user_button.clicked.connect(partial(self.start_chat_with_user, user))
+                self.users_layout.addWidget(user_button)
         else:
-            error_message = QLabel("Failed to fetch online users.")
-            error_message.setAlignment(Qt.AlignCenter)
-            error_message.setStyleSheet("color: red;")
-            self.list_layout.addWidget(error_message)
+            QMessageBox.warning(self, "Error", response.get("message", "Failed to fetch online users."))
 
-    def open_chat_window(self, username):
-        if username in self.active_chats:
-            self.active_chats[username].raise_()  
-            self.active_chats[username].activateWindow()
+    def start_chat_with_user(self, user):
+        target_username = user.get("username")
+        target_ip, target_port = get_target_client_info(target_username)
+
+        if target_ip and target_port:
+            initiate_chat(target_ip, target_port)
+            QMessageBox.information(self, "Chat Started", f"Connected with {target_username}.")
         else:
-            chat_window = ChatWindow(self.current_user, username, self.main_window, parent=None)
-            chat_window.show()
-            self.active_chats[username] = chat_window
+            QMessageBox.warning(self, "Error", f"Could not connect with {target_username}.")
 
-            chat_window.destroyed.connect(lambda: self.active_chats.pop(username, None))
-
-
-class ChatWindow(QWidget):
-    message_received = pyqtSignal(str) 
-
-    def __init__(self, current_user, recipient_user, main_window, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Chat with {recipient_user}")
-        self.resize(610, 660) 
-        self.current_user = current_user
-        self.recipient_user = recipient_user
-        self.main_window = main_window
-        self.is_active = True  
-        layout = QVBoxLayout()  
-        layout.setContentsMargins(10, 10, 10, 10)  
-
-        self.setStyleSheet("""
-            background-color: #BBDEF9; 
-        """)
-        self.chat_display = QTextEdit(self)
-        self.chat_display.setReadOnly(True)
-        self.chat_display.setStyleSheet("""
-            background-color: white;
-            color: #0F52BA;
-            border: 2px solid #64b5f6;
-            border-radius: 8px;
-            padding: 8px 18px;
-            font-size: 20px;
-            font-weight: 200;
-        """)
-
-        layout.addWidget(self.chat_display)
-
-        self.input_layout = QHBoxLayout()
-
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Type a message")
-        self.chat_input.setStyleSheet("""
-            background-color: #64a1d6;
-            color: white;
-            border: 2px solid white;
-            border-radius: 8px;
-            padding: 8px 18px;
-            font-size: 20px;
-            font-weight: 500;
-            height: 60px;
-        """)
-        self.input_layout.addWidget(self.chat_input)
-
-        self.send_button = QPushButton("Send")
-        self.send_button.setCursor(Qt.PointingHandCursor)
-        self.send_button.clicked.connect(self.send_message)
-        self.send_button.setStyleSheet("""
-                    background-color: #90caf9;
-                    color: white;
-                    border: 2px solid #64b5f6;
-                    border-radius: 8px;
-                    padding: 8px 18px;
-                    font-size: 25px;
-                    font-weight: 500;
-                    font-weight: bold; """
-                )
-        self.input_layout.addWidget(self.send_button)
-
-        layout.addLayout(self.input_layout)
-
-        self.back_button = QPushButton("Back")
-        self.back_button.setCursor(Qt.PointingHandCursor)
-        self.back_button.clicked.connect(self.close)
-        self.back_button.setStyleSheet("""
-                    background-color: #90caf9;
-                    color: white;
-                    border: 2px solid #64b5f6;
-                    border-radius: 8px;
-                    padding: 8px 18px;
-                    font-size: 25px;
-                    font-weight: 500;
-                    font-weight: bold; """
-                )
-        layout.addWidget(self.back_button)
-
-        self.setLayout(layout)
-
-        self.message_received.connect(self.update_chat_display)
-
-        threading.Thread(target=self.listen_for_messages, daemon=True).start()
-
-    def send_message(self):
-        message = self.chat_input.text()
-        if message.strip():
-            command = {
-                "action": "SEND_MESSAGE",
-                "sender": self.current_user,
-                "recipient": self.recipient_user,
-                "message": message,
-            }
-            response = send_request(command)
-            if response.get("status") == "success":
-                self.message_received.emit(f"You: {message}")
-                self.chat_input.clear()
-            else:
-                QMessageBox.warning(self, "Error", "Failed to send message.")
-
-    def listen_for_messages(self):
-        while self.is_active:
-            command = {"action": "FETCH_MESSAGES", "recipient": self.current_user}
-            response = send_request(command)
-            if response.get("status") == "success":
-                messages = response.get("messages", [])
-                for msg in messages:
-                    sender_data = msg['sender'] 
-                    if isinstance(sender_data, (list, tuple)):
-                        sender_name = sender_data[1]  
-                    else:
-                        sender_name = sender_data  
-                    message_content = msg['content']
-                    self.message_received.emit(f"{sender_name}: {message_content}")
-            threading.Event().wait(1)
-
-    def update_chat_display(self, message):
-        self.chat_display.append(message)
-
-    def closeEvent(self, event):
-        self.is_active = False
-        event.accept()
-
+    def go_back(self):
+        self.main_window.switch_to_main_app()
 
 
 
@@ -1354,26 +1331,31 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AUBoutique")
         self.setGeometry(200, 200, 900, 800)
         self.load_stylesheet("style.qss")
+
+        # Initialize the QStackedWidget for switching between screens
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
 
+        # Create instances of all your screens
         self.initial_screen = FirstScreen(self)
         self.login_form = Login(self)
         self.signup_form = Signup(self)
         self.main_app_screen = MainAppScreen(self)
         self.add_form = AddProduct(self)
-        self.view_form = None  
+        self.view_form = None
         self.chatbot = Chatbot(self)
-        self.online_users_menu = OnlineUsersMenu(self)  # Add the Online Users menu
+        self.chat_screen = ChatScreen(self)
 
+        # Add all the screens to the stacked widget
         self.stacked_widget.addWidget(self.initial_screen)
         self.stacked_widget.addWidget(self.login_form)
         self.stacked_widget.addWidget(self.signup_form)
         self.stacked_widget.addWidget(self.main_app_screen)
         self.stacked_widget.addWidget(self.add_form)
         self.stacked_widget.addWidget(self.chatbot)
-        self.stacked_widget.addWidget(self.online_users_menu)  # Add to stacked widget
+        self.stacked_widget.addWidget(self.chat_screen)
 
+        # Set the initial screen
         self.stacked_widget.setCurrentWidget(self.initial_screen)
 
     def switch_to_login(self):
@@ -1383,7 +1365,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentWidget(self.signup_form)
 
     def switch_to_main_app(self, username=None):
-        if username:  # Set username for the main app screen
+        if username:
             self.main_app_screen.set_username(username)
         self.stacked_widget.setCurrentWidget(self.main_app_screen)
 
@@ -1394,23 +1376,14 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentWidget(self.add_form)
 
     def switch_to_view_products(self, selected_currency):
-        
         if not self.view_form:
             self.view_form = ViewProduct(self, selected_currency)
             self.stacked_widget.addWidget(self.view_form)
-        else:
-            self.view_form.selected_currency = selected_currency
-            #self.view_form.load_products()
-        self.stacked_widget.addWidget(self.view_form)
+        self.view_form.selected_currency = selected_currency
         self.stacked_widget.setCurrentWidget(self.view_form)
 
     def switch_to_ask_questions(self):
         self.stacked_widget.setCurrentWidget(self.chatbot)
-
-    def switch_to_online_users_menu(self, current_user):
-        self.online_users_menu.load_online_users(current_user)
-        self.stacked_widget.setCurrentWidget(self.online_users_menu)
-
 
     def load_stylesheet(self, filepath):
         try:
@@ -1418,6 +1391,9 @@ class MainWindow(QMainWindow):
                 self.setStyleSheet(file.read())
         except FileNotFoundError:
             QMessageBox.warning(self, "Error", f"Stylesheet file '{filepath}' not found.")
+
+    def switch_to_chat_screen(self):
+        self.stacked_widget.setCurrentWidget(self.chat_screen)
 
 
 
