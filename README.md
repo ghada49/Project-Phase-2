@@ -1,10 +1,14 @@
+IMPORTANT NOTE:
+Difference between python files having "1" and without it.
+As mentioned in demo and report, we submitted two versions one with p2p chat and one with server/client
+- client1.py / server1.py / style1.qss --> are for the version where chat is purely p2p
+- client.py /server.py / style.qss --> are for the version where the chat is based on client/server interaction
+
 LIBRARIES TO INSTALL:
 
 To run the code make sure that you install those libraries :
 
-pip install pillow
-
-Note that the following libraries below should be built-in in your Python so by default there is NO NEED to install them, but we will mention them here again if your version of python do not have them and if you get an error: pip install email
+pip install email
 pip install json
 pip install socket
 pip install threading
@@ -13,8 +17,6 @@ pip install datetime
 pip install smtplib
 pip install PyQt5
 
-
-But again, in principle, those are built in and no need to install them. Please, first, try to run the code without them and if does not work, download the missing library.
 
 HOW TO RUN THE CODE:
 
@@ -40,8 +42,8 @@ MAIN STRUCTURE OF THE GUI : (More details in the demo)
 	[ Login button ] --> we click it after filling it
 
 
-2. Window After Login:
-  - Select Currency (drop down) --> You need to select the currency, otherwise USD is default
+2. Window After Login (after authentication):
+  - Select Currency (drop down) --> You can select the currency, otherwise USD is default
   - Submit Currency
   - Add Products 
 	In add products, you need to fill :
@@ -54,11 +56,13 @@ MAIN STRUCTURE OF THE GUI : (More details in the demo)
 
   - Products and Purchase (detailed below)
   - Start Chatting (with users)
-	- Available user will be shown 
+	- Online user will be shown 
 	- You press on the button containing the user's name to chat with them 
 	If ame132 is online you will have [ ame132 button ] that you can click if you want to chat with her
   - Ask questions to Chatbot
 	-You can ask any FAQ questions (mentioned in the report) and the chatbot will answer)
+  - Logout:
+    logout application when done 
 
 
 3. Products and purchase:
