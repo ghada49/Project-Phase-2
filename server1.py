@@ -169,15 +169,8 @@ def handle_client(client_socket, addr):
                 response = search_products_by_seller(data.get("seller_id"))
                 client_socket.send(json.dumps(response).encode('utf-8'))
             # Command to view the listing of the seller (products that he added that were sold or not)
-            elif command == "VIEW_MY_LISTINGS" and authenticated_user:
-                response = view_my_listings(authenticated_user[0])
-                client_socket.send(json.dumps(response).encode('utf-8'))
-            
 
-            #Command to view the transactions (what we bought or sold)
-            elif command == "VIEW_TRANSACTIONS" and authenticated_user:
-                response = view_transactions(authenticated_user[0])
-                client_socket.send(json.dumps(response).encode('utf-8'))
+            
             elif command == "SEARCH_PRODUCT_BY_NAME" and authenticated_user:
                 product_name = data.get("product_name", "")
                 response = search_product_by_name(product_name)
@@ -500,111 +493,7 @@ def purchase_product(buyer_id, product_ids):
         }) # we can see all these fields of the user
 
     return {"message": "Users: ","users": results}
-# view listing permits the user (seller) to see what products he sold or not
-def view_my_listings(user_id):
-    cursor.execute("""
-        SELECT 
-            Products.product_id,
-            Products.product_name,
-            Products.price,
-            SUBSTR(Products.description, 1, 20) AS short_description,
-            Products.status,
-            CASE WHEN Products.image IS NOT NULL THEN 'Yes' ELSE 'No' END AS has_image
-        FROM 
-            Products
-        WHERE 
-            Products.user_id = ?
-    """, (user_id,)) # here we are selecting those products that he has added 
 
-    products = cursor.fetchall()
-
-    if not products:
-        return {"message": "You have no listings."}
-
-    results = []
-    for product in products:
-        results.append({
-            "product_id": product[0],
-            "product_name": product[1],
-            "price": product[2],
-            "short_description": product[3],
-            "status": product[4],
-            "has_image": product[5]
-        }) # and here is the information shown to the client side to the seller
-
-    return {"message": "These are your listing: ","products": results}
-
-# view transactions helps the user seller or buyer to see what he bought or sold and more details on that
-def view_transactions(user_id):
-    cursor.execute("""
-        SELECT 
-            Products.product_name,
-            Products.price,
-            Transactions.transaction_date,
-            Buyer.username || ' - ' || Buyer.name AS buyer_info
-        FROM 
-            Transactions
-        JOIN 
-            Products ON Transactions.product_id = Products.product_id
-        JOIN 
-            Users AS Buyer ON Transactions.buyer_id = Buyer.user_id
-        WHERE 
-            Products.user_id = ?
-        ORDER BY 
-            Transactions.transaction_date DESC
-    """, (user_id,))
-    sold_transactions = cursor.fetchall() # here we are getting all the sold products 
-
-    if not sold_transactions:
-        sold_message ="No products sold."
-    else:
-        sold_message = "There are products sold"
-
-    cursor.execute("""
-        SELECT 
-            Products.product_name,
-            Products.price,
-            Transactions.transaction_date,
-            Seller.username || ' - ' || Seller.name AS seller_info
-        FROM 
-            Transactions
-        JOIN 
-            Products ON Transactions.product_id = Products.product_id
-        JOIN 
-            Users AS Seller ON Products.user_id = Seller.user_id
-        WHERE 
-            Transactions.buyer_id = ?
-        ORDER BY 
-            Transactions.transaction_date DESC
-    """, (user_id,)) #Here all the bought products
-    bought_transactions = cursor.fetchall()
-    if not bought_transactions:
-        bought_message ="No products bought."
-    else:
-        bought_message = "There are products bought"
-     
-    sold_results = []
-    for trans in sold_transactions:
-        sold_results.append({
-            "product_name": trans[0],
-            "price": trans[1],
-            "transaction_date": trans[2],
-            "buyer_info": trans[3]
-        })
-
-    bought_results = []
-    for trans in bought_transactions:
-        bought_results.append({
-            "product_name": trans[0],
-            "price": trans[1],
-            "transaction_date": trans[2],
-            "seller_info": trans[3]
-        })
-
-    return {"message":"sent", "bought_message": bought_message, "sold_message": sold_message,
-        "sold_transactions": sold_results,
-        "bought_transactions": bought_results
-    }
 def sellerlist():
     try:
         cursor.execute("SELECT DISTINCT user_id FROM Products")
