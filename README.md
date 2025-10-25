@@ -1,3 +1,47 @@
+# 🛍️ AUB Boutique  
+
+AUB Boutique is a **client–server online marketplace** designed for buyers and sellers within the AUB community.  
+It enables users to register, log in securely, add and purchase products, chat with others, and interact with a built-in chatbot — all through a GUI-based Python application.
+
+---
+
+## ⚙️ Features  
+
+### 👤 User Authentication  
+- **Sign Up:** Create a new account by entering your name, email, username, and password.  
+- **Login:** Securely log in using your username and password.  
+
+### 💱 Currency Selection  
+- Users can select their preferred currency (USD by default).  
+- Automatic price conversion and display in the chosen currency.  
+
+### 🛒 Marketplace Functionality  
+- **Add Products:**  
+  - Input product name, description, image path, price, currency, and quantity.  
+  - Click “Add Product” to publish your listing.  
+- **View All Products:**  
+  - Display products in organized widgets.  
+  - Click on a product to view detailed information.  
+- **Search Products:**  
+  - Use the search bar to find items by name.  
+- **Filter by Seller:**  
+  - Select a seller from a dropdown to view their products.  
+- **Shopping Cart:**  
+  - Add or remove products, view total prices, and proceed to checkout.  
+
+### 💬 Communication  
+- **Live Chat:**  
+  - View online users and click on a username to start a chat.  
+- **Chatbot:**  
+  - Ask frequently asked questions (FAQs) and get automated responses.
+
+### ⭐ Product Ratings  
+- Users can rate purchased products, and average ratings appear in product details.  
+
+### 🚪 Logout  
+- Log out safely when done using the application.  
+
+
 IMPORTANT NOTE:
 Difference between python files having "1" and without it.
 As mentioned in demo and report, we submitted two versions one with p2p chat and one with server/client
